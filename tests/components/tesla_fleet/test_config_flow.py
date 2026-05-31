@@ -1,5 +1,6 @@
 """Test the Tesla Fleet config flow."""
 
+from collections.abc import Generator
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -73,6 +74,16 @@ async def create_credential(hass: HomeAssistant) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def mock_partner_login() -> Generator[AsyncMock]:
+    """Mock the partner login helper used by the config flow."""
+    with patch(
+        "homeassistant.components.tesla_fleet.config_flow._async_partner_login",
+        new=AsyncMock(),
+    ) as mock_login:
+        yield mock_login
+
+
 @pytest.fixture
 def mock_private_key():
     """Mock private key for testing."""
@@ -95,6 +106,7 @@ async def test_partner_login_auth_error(
     aioclient_mock: AiohttpClientMocker,
     access_token: str,
     mock_private_key,
+    mock_partner_login: AsyncMock,
 ) -> None:
     """Test partner login auth errors abort the flow cleanly."""
     result = await hass.config_entries.flow.async_init(
@@ -128,8 +140,8 @@ async def test_partner_login_auth_error(
         mock_api = AsyncMock()
         mock_api.private_key = mock_private_key
         mock_api.get_private_key = AsyncMock()
-        mock_api.partner_login = AsyncMock(side_effect=LoginRequired)
         mock_api_class.return_value = mock_api
+        mock_partner_login.side_effect = LoginRequired
 
         result = await hass.config_entries.flow.async_configure(result["flow_id"])
 
@@ -810,7 +822,7 @@ async def test_registration_complete_with_domain_no_user_input(
     assert result["step_id"] == "registration_complete"
     assert (
         result["description_placeholders"]["virtual_key_url"]
-        == "https://www.tesla.com/_ak/example.com"
+        == "https://www.tesla.cn/_ak/example.com"
     )
 
 

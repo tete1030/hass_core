@@ -16,6 +16,7 @@ from tesla_fleet_api.exceptions import (
     OAuthExpired,
     PreconditionFailed,
     TeslaFleetError,
+    raise_for_status,
 )
 import voluptuous as vol
 
@@ -28,8 +29,44 @@ from homeassistant.helpers.selector import (
     QrErrorCorrectionLevel,
 )
 
-from .const import CONF_DOMAIN, DOMAIN, LOGGER
+from .const import (
+    CONF_DOMAIN,
+    DEVELOPER_DASHBOARD_URL,
+    DOMAIN,
+    LOGGER,
+    TOKEN_URL,
+    VIRTUAL_KEY_URL,
+)
 from .oauth import TeslaUserImplementation
+
+
+async def _async_partner_login(
+    api: TeslaFleetApi,
+    client_id: str,
+    client_secret: str,
+    scopes: list[Scope],
+) -> None:
+    """Log in to the Tesla partner API using the China auth host."""
+    assert api.server
+
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "audience": api.server,
+        "scope": " ".join(scopes),
+    }
+
+    async with api.session.post(
+        TOKEN_URL,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data=data,
+    ) as resp:
+        if not resp.ok:
+            await raise_for_status(resp)
+
+        token_data = await resp.json()
+        api._access_token = token_data["access_token"]
 
 
 class OAuth2FlowHandler(
@@ -72,14 +109,14 @@ class OAuth2FlowHandler(
             )
         self._abort_if_unique_id_configured()
 
-        # OAuth done, setup Partner API connections for all regions
+        # This branch is intended for Tesla China accounts, which authenticate
+        # and register domains through the China stack only.
         implementation = cast(TeslaUserImplementation, self.flow_impl)
         session = async_get_clientsession(self.hass)
         failed_regions: list[str] = []
 
-        for region, server_url in SERVERS.items():
-            if region == "cn":
-                continue
+        for region in ("cn",):
+            server_url = SERVERS[region]
             api = TeslaFleetApi(
                 session=session,
                 access_token="",
@@ -92,7 +129,8 @@ class OAuth2FlowHandler(
             )
             await api.get_private_key(self.hass.config.path("tesla_fleet.key"))
             try:
-                await api.partner_login(
+                await _async_partner_login(
+                    api,
                     implementation.client_id,
                     implementation.client_secret,
                     [Scope.OPENID],
@@ -146,7 +184,7 @@ class OAuth2FlowHandler(
         return self.async_show_form(
             step_id="domain_input",
             description_placeholders={
-                "dashboard": "https://developer.tesla.com/en_AU/dashboard/"
+                "dashboard": DEVELOPER_DASHBOARD_URL
             },
             data_schema=vol.Schema(
                 {
@@ -237,7 +275,7 @@ class OAuth2FlowHandler(
         if not self.domain:
             return await self.async_step_domain_input()
 
-        virtual_key_url = f"https://www.tesla.com/_ak/{self.domain}"
+        virtual_key_url = VIRTUAL_KEY_URL.format(domain=self.domain)
         data_schema = vol.Schema({}).extend(
             {
                 vol.Optional("qr_code"): QrCodeSelector(

@@ -14,8 +14,11 @@ CONF_REFRESH_TOKEN = "refresh_token"
 
 LOGGER = logging.getLogger(__package__)
 
-AUTHORIZE_URL = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/authorize"
-TOKEN_URL = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
+AUTHORIZE_URL = "https://auth.tesla.cn/oauth2/v3/authorize"
+TOKEN_URL = "https://auth.tesla.cn/oauth2/v3/token"
+
+DEVELOPER_DASHBOARD_URL = "https://developer.tesla.cn/dashboard/"
+VIRTUAL_KEY_URL = "https://www.tesla.cn/_ak/{domain}"
 
 SCOPES = [
     Scope.OPENID,
