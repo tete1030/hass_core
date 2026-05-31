@@ -18,6 +18,7 @@
       "default": "Successfully authenticated with Tesla."
     },
     "error": {
+      "invalid_callback_base_url": "Enter an HTTPS base URL without a path, query string, or fragment.",
       "invalid_domain": "Invalid domain format. Please enter a valid domain name.",
       "invalid_response": "The registration was rejected by Tesla",
       "precondition_failed": "The domain does not match the application's allowed origins.",
@@ -26,6 +27,16 @@
       "unknown_error": "An unknown error occurred: {error}"
     },
     "step": {
+      "user": {
+        "data": {
+          "public_callback_base_url": "Public callback base URL"
+        },
+        "data_description": {
+          "public_callback_base_url": "Optional. Enter the public HTTPS base URL that should receive Tesla's OAuth callback, such as https://alset.example.com. Leave blank to use Home Assistant's default callback URL."
+        },
+        "description": "Choose whether Tesla should return to a dedicated public callback host instead of Home Assistant's default OAuth callback URL.",
+        "title": "Tesla Fleet callback settings"
+      },
       "domain_input": {
         "data": {
           "domain": "Domain"
@@ -62,6 +73,19 @@
         },
         "description": "To enable command signing, you must open the Tesla app, select your vehicle, and then visit the following URL to set up a virtual key. You must repeat this process for each vehicle.\n\n{virtual_key_url}\n\nIf you later enable additional Tesla API permissions, reauthenticate the integration to refresh the granted scopes.",
         "title": "Command signing"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "public_callback_base_url": "Public callback base URL"
+        },
+        "data_description": {
+          "public_callback_base_url": "Optional. Enter the public HTTPS base URL that should receive Tesla's OAuth callback, such as https://alset.example.com. Leave blank to use Home Assistant's default callback URL."
+        },
+        "title": "Tesla Fleet callback settings"
       }
     }
   },

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 import logging
 import re
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import jwt
 from tesla_fleet_api import TeslaFleetApi
@@ -20,7 +21,13 @@ from tesla_fleet_api.exceptions import (
 )
 import voluptuous as vol
 
-from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    OptionsFlowWithReload,
+    SOURCE_REAUTH,
+    ConfigFlowResult,
+)
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
@@ -31,6 +38,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_DOMAIN,
+    CONF_PUBLIC_CALLBACK_BASE_URL,
     DEVELOPER_DASHBOARD_URL,
     DOMAIN,
     LOGGER,
@@ -69,12 +77,52 @@ async def _async_partner_login(
         api._access_token = token_data["access_token"]
 
 
+def _normalize_public_callback_base_url(value: str) -> str | None:
+    """Normalize an optional HTTPS callback base URL."""
+    value = value.strip()
+    if not value:
+        return None
+
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in ("", "/")
+    ):
+        raise ValueError
+
+    netloc = parsed.hostname.lower()
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+
+    return f"https://{netloc}"
+
+
+def _get_entry_public_callback_base_url(entry: ConfigEntry) -> str | None:
+    """Return the configured callback base URL from options or data."""
+    if CONF_PUBLIC_CALLBACK_BASE_URL in entry.options:
+        return entry.options[CONF_PUBLIC_CALLBACK_BASE_URL] or None
+    return entry.data.get(CONF_PUBLIC_CALLBACK_BASE_URL)
+
+
 class OAuth2FlowHandler(
     config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN
 ):
     """Config flow to handle Tesla Fleet API OAuth2 authentication."""
 
     DOMAIN = DOMAIN
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> TeslaFleetOptionsFlowHandler:
+        """Return the options flow for this handler."""
+        return TeslaFleetOptionsFlowHandler(config_entry)
 
     def __init__(self) -> None:
         """Initialize config flow."""
@@ -83,17 +131,73 @@ class OAuth2FlowHandler(
         self.data: dict[str, Any] = {}
         self.uid: str | None = None
         self.apis: list[TeslaFleetApi] = []
+        self.public_callback_base_url: str | None = None
 
     @property
     def logger(self) -> logging.Logger:
         """Return logger."""
         return LOGGER
 
+    def _data_with_public_callback_base_url(
+        self, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store the callback base URL alongside OAuth data when configured."""
+        if self.public_callback_base_url is None:
+            return data
+        return {**data, CONF_PUBLIC_CALLBACK_BASE_URL: self.public_callback_base_url}
+
+    def _suggested_domain(self) -> str | None:
+        """Suggest the Tesla public-key domain from the callback base URL."""
+        if self.domain:
+            return self.domain
+        if self.public_callback_base_url:
+            return urlsplit(self.public_callback_base_url).hostname
+        return None
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect an optional public callback base URL before OAuth starts."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            try:
+                self.public_callback_base_url = _normalize_public_callback_base_url(
+                    user_input.get(CONF_PUBLIC_CALLBACK_BASE_URL, "")
+                )
+            except ValueError:
+                errors[CONF_PUBLIC_CALLBACK_BASE_URL] = "invalid_callback_base_url"
+            else:
+                return await super().async_step_user()
+
+        schema = vol.Schema({vol.Required(CONF_PUBLIC_CALLBACK_BASE_URL): str})
+        suggested = {
+            CONF_PUBLIC_CALLBACK_BASE_URL: user_input.get(
+                CONF_PUBLIC_CALLBACK_BASE_URL, ""
+            )
+            if user_input
+            else ""
+        }
+        return self.async_show_form(
+            step_id="user",
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            errors=errors,
+        )
+
+    async def async_step_auth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Apply the configured callback override before generating OAuth URLs."""
+        implementation = cast(TeslaUserImplementation, self.flow_impl)
+        implementation.public_callback_base_url = self.public_callback_base_url
+        return await super().async_step_auth(user_input)
+
     async def async_oauth_create_entry(
         self,
         data: dict[str, Any],
     ) -> ConfigFlowResult:
         """Handle OAuth completion and proceed to domain registration."""
+        data = self._data_with_public_callback_base_url(data)
         token = jwt.decode(
             data["token"]["access_token"], options={"verify_signature": False}
         )
@@ -105,7 +209,7 @@ class OAuth2FlowHandler(
         if self.source == SOURCE_REAUTH:
             self._abort_if_unique_id_mismatch(reason="reauth_account_mismatch")
             return self.async_update_reload_and_abort(
-                self._get_reauth_entry(), data=data
+                self._get_reauth_entry(), data_updates=data
             )
         self._abort_if_unique_id_configured()
 
@@ -181,16 +285,20 @@ class OAuth2FlowHandler(
                 self.domain = domain
                 return await self.async_step_domain_registration()
 
+        suggested = {
+            CONF_DOMAIN: user_input.get(CONF_DOMAIN, "")
+            if user_input
+            else (self._suggested_domain() or "")
+        }
+        schema = vol.Schema({
+            vol.Required(CONF_DOMAIN): str,
+        })
         return self.async_show_form(
             step_id="domain_input",
             description_placeholders={
                 "dashboard": DEVELOPER_DASHBOARD_URL
             },
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_DOMAIN): str,
-                }
-            ),
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
             errors=errors,
         )
 
@@ -311,7 +419,11 @@ class OAuth2FlowHandler(
                 step_id="reauth_confirm",
                 description_placeholders={"name": "Tesla Fleet"},
             )
-        # For reauth, skip domain registration and go straight to OAuth
+
+        self.public_callback_base_url = _get_entry_public_callback_base_url(
+            self._get_reauth_entry()
+        )
+        # For reauth, skip domain registration and go straight to OAuth.
         return await super().async_step_user()
 
     def _is_valid_domain(self, domain: str) -> bool:
@@ -321,3 +433,41 @@ class OAuth2FlowHandler(
             r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$"
         )
         return bool(domain_pattern.match(domain))
+
+
+class TeslaFleetOptionsFlowHandler(OptionsFlowWithReload):
+    """Handle Tesla Fleet options."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the Tesla Fleet options."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            try:
+                callback_base_url = _normalize_public_callback_base_url(
+                    user_input.get(CONF_PUBLIC_CALLBACK_BASE_URL, "")
+                )
+            except ValueError:
+                errors[CONF_PUBLIC_CALLBACK_BASE_URL] = "invalid_callback_base_url"
+            else:
+                return self.async_create_entry(
+                    title="",
+                    data={
+                        CONF_PUBLIC_CALLBACK_BASE_URL: callback_base_url or "",
+                    },
+                )
+
+        schema = vol.Schema({vol.Required(CONF_PUBLIC_CALLBACK_BASE_URL): str})
+        suggested = {
+            CONF_PUBLIC_CALLBACK_BASE_URL: _get_entry_public_callback_base_url(
+                self.config_entry
+            )
+            or ""
+        }
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            errors=errors,
+        )

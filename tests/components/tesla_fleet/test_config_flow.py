@@ -21,6 +21,7 @@ from homeassistant.components.tesla_fleet.config_flow import OAuth2FlowHandler
 from homeassistant.components.tesla_fleet.const import (
     AUTHORIZE_URL,
     CONF_DOMAIN,
+    CONF_PUBLIC_CALLBACK_BASE_URL,
     DOMAIN,
     SCOPES,
     TOKEN_URL,
@@ -37,6 +38,21 @@ from tests.typing import ClientSessionGenerator
 
 REDIRECT = "https://example.com/auth/external/callback"
 UNIQUE_ID = "uid"
+
+
+async def init_user_flow(
+    hass: HomeAssistant, callback_base_url: str = "https://example.com"
+):
+    """Start the user flow and submit the optional callback override."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PUBLIC_CALLBACK_BASE_URL: callback_base_url}
+    )
 
 
 @pytest.fixture
@@ -109,9 +125,7 @@ async def test_partner_login_auth_error(
     mock_partner_login: AsyncMock,
 ) -> None:
     """Test partner login auth errors abort the flow cleanly."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
@@ -158,9 +172,7 @@ async def test_partner_login_partial_failure(
     mock_private_key,
 ) -> None:
     """Test partner login succeeds when one region fails."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
@@ -224,9 +236,7 @@ async def test_full_flow_with_domain_registration(
     mock_private_key,
 ) -> None:
     """Test full flow with domain registration."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     assert result["type"] is FlowResultType.EXTERNAL_STEP
 
@@ -303,6 +313,28 @@ async def test_full_flow_with_domain_registration(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == UNIQUE_ID
     assert result["result"].unique_id == UNIQUE_ID
+    assert result["result"].data[CONF_PUBLIC_CALLBACK_BASE_URL] == "https://example.com"
+
+
+@pytest.mark.usefixtures("current_request_with_host")
+async def test_user_step_invalid_callback_base_url(hass: HomeAssistant) -> None:
+    """Test the callback override validation on the initial user step."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_PUBLIC_CALLBACK_BASE_URL: "http://example.com/path"},
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {
+        CONF_PUBLIC_CALLBACK_BASE_URL: "invalid_callback_base_url"
+    }
 
 
 @pytest.mark.usefixtures("current_request_with_host")
@@ -314,9 +346,7 @@ async def test_domain_input_invalid_domain(
     mock_private_key,
 ) -> None:
     """Test domain input with invalid domain."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
@@ -395,9 +425,7 @@ async def test_domain_registration_errors(
     expected_error,
 ) -> None:
     """Test domain registration with errors that stay on domain_registration step."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
@@ -454,9 +482,7 @@ async def test_domain_registration_precondition_failed(
     mock_private_key,
 ) -> None:
     """Test domain registration with PreconditionFailed redirects to domain_input."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
@@ -513,9 +539,7 @@ async def test_domain_registration_public_key_not_found(
     mock_private_key,
 ) -> None:
     """Test domain registration with missing public key."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
@@ -572,9 +596,7 @@ async def test_domain_registration_public_key_mismatch(
     mock_private_key,
 ) -> None:
     """Test domain registration with public key mismatch."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
@@ -633,9 +655,7 @@ async def test_domain_registration_partial_failure(
     mock_private_key,
 ) -> None:
     """Test domain registration succeeds when one region fails."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
@@ -715,9 +735,7 @@ async def test_domain_registration_all_regions_fail(
     mock_private_key,
 ) -> None:
     """Test domain registration fails when all regions fail."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
@@ -941,9 +959,7 @@ async def test_duplicate_unique_id_abort(
     )
     existing_entry.add_to_hass(hass)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await init_user_flow(hass)
 
     state = config_entry_oauth2_flow._encode_jwt(
         hass,
